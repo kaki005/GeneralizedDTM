@@ -16,6 +16,8 @@ dependencies = [
     "tensorly>=0.8.1",
     "utilpy @ git+https://github.com/kaki005/PythonUtils.git",
     "rich>=13.9.4",
+    "tensorflow>=2.18.0",
+    "gpflow>=2.5.2",
 ]
 readme = "README.md"
 requires-python = ">= 3.10"
@@ -24,15 +26,13 @@ requires-python = ">= 3.10"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# [tool.rye]
-# managed = true
-# dev-dependencies = ["pre-commit>=3.8.0", "ruff>=0.8.0"]
+
 
 [tool.hatch.metadata]
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pythontemplate"]
+packages = ["src/models"]
 
 
 [tool.ruff]
@@ -105,4 +105,5 @@ warn_redundant_casts = true # 冗長なキャストに警告
 dev = [
     "pre-commit>=4.0.1",
     "pylance>=0.22.0",
+    "ruff>=0.9.10",
 ]
