@@ -14,7 +14,7 @@ dependencies = [
     "dataclasses-json>=0.6.7",
     "pandas>=2.2.2",
     "tensorly>=0.8.1",
-    "utilpy @ git+https://github.com/kaki005/PythonUtils.git",
+    "utilpy",
     "rich>=13.9.4",
     "tensorflow>=2.18.0",
     "gpflow>=2.5.2",
@@ -60,7 +60,10 @@ ignore = [
     "B904",  # raise ... from ... になっていない場合のエラーを無視
     "F401",  # imported but not used
     "UP008",
+    "B006",
     "B007",
+    "F821",
+    "F841", #Local variable is assigned to but never used
 ]
 logger-objects = ["logging.Logger"]
 
@@ -100,6 +103,9 @@ warn_return_any = true         # 戻り値が Any 型ではない関数の戻り
 # ※ `# type: ignore` が付与されている箇所は mypy のエラーを無視出来る
 # warn_unused_ignores = true   # mypy エラーに該当しない箇所に `# type: ignore` コメントが付与されていたら警告
 warn_redundant_casts = true # 冗長なキャストに警告
+
+[tool.uv.sources]
+utilpy = { git = "https://github.com/kaki005/PythonUtils.git" }
 
 [dependency-groups]
 dev = [
