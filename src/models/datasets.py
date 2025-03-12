@@ -23,6 +23,7 @@ nltk.download('wordnet')
 import json
 import os
 import subprocess
+from genericpath import isfile
 
 import nltk
 import numpy as np
@@ -34,7 +35,7 @@ from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, CountVectorizer
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.utils import Bunch
 
-nltk.download()
+# nltk.download()
 ENGLISH_WORDS = set(nltk.corpus.words.words())
 STEMMER = SnowballStemmer("english")
 
@@ -51,7 +52,7 @@ class LemmaTokenizer:
         return [self.wnl.lemmatize(self.stemmer.stem(t)) for t in word_tokenize(doc) if t.lower() in ENGLISH_WORDS]
 
 
-def preprocess_nips() -> tuple[pd.DataFrame, pd.Series, np.ndarray]:
+def preprocess_nips() -> tuple[pd.DataFrame, pd.Series, list[pd.Timestamp]]:
     df, _, vocabulary = get_neurips()
     vocabulary_subset = vocabulary[vocabulary > 1700].index
     X_small = df.loc[vocabulary_subset].T.dropna()
@@ -69,7 +70,7 @@ def preprocess_nips() -> tuple[pd.DataFrame, pd.Series, np.ndarray]:
     # df_train["years"] = inverse_transform_fn(index_tr_sorted)
     # df_test = pd.DataFrame(X_ts_sorted[:, 0, :])
     # df_test["years"] = inverse_transform_fn(index_ts_sorted)
-    return (X_small, vocabulary[vocabulary > 1700], year)
+    return X_small.T, vocabulary[vocabulary > 1700], pd.to_datetime(year.astype(int), format="%Y")
 
 
 def get_neurips() -> tuple[pd.DataFrame, np.ndarray, pd.Series]:
@@ -78,11 +79,17 @@ def get_neurips() -> tuple[pd.DataFrame, np.ndarray, pd.Series]:
     Args:
         filename (str): Location of the file for NeurIPS dataset.
     """
-
-    subprocess.call(
-        "curl https://archive.ics.uci.edu/ml/machine-learning-databases/00371/NIPS_1987-2015.csv -o NIPS_1987-2015.csv"
-    )
-    df = pd.read_csv("NIPS_1987-2015.csv", header=0, index_col=0)
+    filepath = f"{os.getcwd()}/NIPS_1987-2015.csv"
+    if not os.path.isfile(filepath):
+        subprocess.call(
+            [
+                "curl",
+                "https://archive.ics.uci.edu/ml/machine-learning-databases/00371/NIPS_1987-2015.csv",
+                "-o",
+                "NIPS_1987-2015.csv",
+            ]
+        )
+    df = pd.read_csv(filepath, header=0, index_col=0)
     year = np.array([x.split("_")[0] for x in df.columns])
 
     # preprocess

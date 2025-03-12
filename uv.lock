@@ -1557,6 +1557,7 @@ dependencies = [
     { name = "seaborn" },
     { name = "tensorflow" },
     { name = "tensorly" },
+    { name = "tf-keras" },
     { name = "utilpy" },
     { name = "wandb" },
 ]
@@ -1581,8 +1582,9 @@ requires-dist = [
     { name = "rich", specifier = ">=13.9.4" },
     { name = "scikit-learn", specifier = ">=1.5.1" },
     { name = "seaborn", specifier = ">=0.13.2" },
-    { name = "tensorflow", specifier = ">=2.18.0" },
+    { name = "tensorflow" },
     { name = "tensorly", specifier = ">=0.8.1" },
+    { name = "tf-keras", specifier = ">=2.18.0" },
     { name = "utilpy", git = "https://github.com/kaki005/PythonUtils.git" },
     { name = "wandb", specifier = ">=0.17.6" },
 ]
@@ -2123,7 +2125,7 @@ name = "tf-keras"
 version = "2.18.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "tensorflow", marker = "sys_platform == 'linux'" },
+    { name = "tensorflow" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a9/a4/7d0acc28cde2b29b8114552ce3258dafdc6b2186d24bf8e912de713dd74f/tf_keras-2.18.0.tar.gz", hash = "sha256:ebf744519b322afead33086a2aba872245473294affd40973694f3eb7c7ad77d", size = 1260765 }
 wheels = [
