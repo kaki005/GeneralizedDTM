@@ -2,6 +2,7 @@ import logging
 import time
 from logging import Logger
 
+import joblib
 import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -43,8 +44,6 @@ class GDTM:
         """prior variance"""
         self.s_x: float = s_x
         """measurement variance"""
-        self.invS: Matrix
-        """inverse variance"""
         self.eta_1: list[tf.Variable]
         """natural parameters to the topic normals"""
         self.eta_2: tf.Variable
@@ -85,36 +84,33 @@ class GDTM:
         """size of minibatch"""
         self.D: int = self.training_doc_ids.shape[0]
         """number of (training) documents"""
-        self._lambda: Matrix
-        """variational parameter to the dirichlets"""
-        self.phi: Vector[Matrix]
-        """variational parameter to the multinomials (selecting the source distribution)"""
         self.zeta: tf.Variable
         """variational parameter for bounding the intractable expectation caused by softmax fct"""
-        self.suff_stats_tk: Vector[Vector]
-        """suffstats"""
-        self.suff_stats_tkx: Vector[Matrix]
-        """suffstats"""
-        self.means: Vector[Matrix]
-        """variational means"""
         self.s: tf.Variable
-        """variational variance"""
+        """covariance matrix of inducing points"""
         self.visualize: bool = visualize
         """switch on or off any visualization"""
         self.inducing_points: tf.Tensor  # inducing point locations for sparse GP
-        self.Kmm: Matrix  # inducing point covariance for sparse GP
+        self.Kmm: Matrix
+        """inducing point covariance for sparse GP"""
         self.KmmInv: Matrix  # inverse
         self.Knn: Matrix  # full rank covariance for GP models
-        self.KnnInv: Matrix  # inverse
-        self.Knm: Matrix  # cross covariance training points - inducing points for sparse GP
-        self.KnmKmmInv: Matrix  # cross covariance x inverse inducing point covariance, to save computation
-        self.K_tilde: Matrix  # low rank approximation of full rank covariance (sparse GP)
-        self.K_tilde_diag: Matrix  # diagonal of K_tilde
-        self.S_diags: Vector[Matrix]  # variational covariance diagonals
-        self.Λ_diags: Vector[Matrix]  # helper for storing Λ diagonals
-        self.mu: list[tf.Variable]  # inducing point values in sparse GP
-        self.krn: Kernel = kernel  # kernel object for GP models
-        self.likelihood_counts: list[int]  # list of #docs seen for likelihoods (ELBO estimates)
+        self.KnnInv: Matrix
+        """inverse of Knn"""
+        self.Knm: Matrix
+        """cross covariance training points - inducing points for sparse GP"""
+        self.KnmKmmInv: Matrix
+        """cross covariance x inverse inducing point covariance, to save computation"""
+        self.K_tilde: Matrix
+        """low rank approximation of full rank covariance (sparse GP)"""
+        self.K_tilde_diag: Matrix
+        """diagonal of K_tilde"""
+        self.mu: list[tf.Variable]
+        """inducing point values in sparse GP"""
+        self.krn: Kernel = kernel
+        """kernel for GP models"""
+        self.likelihood_counts: list[int]
+        """list of #docs seen for likelihoods (ELBO estimates)"""
         self.test_counts: list[int]  # same but for test set likelihoods
         self.likelihoods: list[float]  # measured ELBO estimates
         self.test_perplexities: list[float]  # measured test set likelihoods
@@ -150,12 +146,6 @@ class GDTM:
         a = (dig_lambda - dig_lambda_sum)[:, tf.newaxis] + means - self.zeta[:, t_doc, tf.newaxis] - tf.math.log(phi).T
         b = tf.matmul(phi, a)
         likelihood = tf.reduce_sum(tf.linalg.matvec(b, freqs, transpose_a=True))
-        # for k in range(self.K):
-        #     likelihood += tf.reduce_sum(
-        #         freqs
-        #         * phi[:, k]
-        #         * (dig_lambda[k] - dig_lambda_sum + means[k, :] - self.zeta[k, t_doc] - tf.math.log(phi[:, k]))
-        #     )
         likelihood += tf.reduce_sum(tf.math.lgamma(lambd)) - tf.math.lgamma(tf.reduce_sum(lambd))
         likelihood += tf.reduce_sum((self.alpha - lambd) * (dig_lambda - dig_lambda_sum))
         return likelihood
@@ -171,15 +161,26 @@ class GDTM:
         for doc_id in data_idxes:
             words, counts = self.corpus.get_words_and_counts(doc_id)
             words_seen = words_seen.union(words)  # 既存の集合と統合
+            t_doc = self.corpus.get_timestamp_index(doc_id.numpy().item())
+            t_seen.add(t_doc)
 
         # reset sufficient statistics for the minibatch
         ɸ = tf.zeros((self.T, self.K), dtype=tf.float64)
         Ξ = tf.zeros((self.T, self.V, self.K), dtype=tf.float64)
         doc_topic_proportions = []
-        for i, doc_idx in enumerate(data_idxes):  # 文書ごとに
-            (vi_ll, λ, ɸ, Ξ) = self.doc_e_step(doc_idx.numpy().item(), ɸ, Ξ, t_seen)  # eステップ
+        returns = joblib.Parallel(n_jobs=-1)(
+            joblib.delayed(self.doc_e_step)(doc_idx.numpy().item()) for doc_idx in data_idxes
+        )
+        for ret in returns:
+            (vi_ll, λ, ɸt, Ξt) = ret
             e_step_ll += vi_ll
-            doc_topic_proportions.append(λ)  # 文書ごとのトピック比率
+            doc_topic_proportions.append(λ)
+            ɸ += ɸt
+            Ξ += Ξt
+        # for i, doc_idx in enumerate(data_idxes):  # 文書ごとに
+        #     (vi_ll, λ, ɸ, Ξ) = self.doc_e_step(doc_idx.numpy().item(), ɸ, Ξ, t_seen)  # eステップ
+        #     e_step_ll += vi_ll
+        #     doc_topic_proportions.append(λ)  # 文書ごとのトピック比率
         return e_step_ll, ɸ, Ξ, words_seen, t_seen, doc_topic_proportions
 
     """
@@ -194,12 +195,14 @@ class GDTM:
         λ: 文書のトピック分布(Dirichlet)のパラメータ
     """
 
-    def doc_e_step(self, doc_idx: int, ɸ: tf.Tensor, Ξ: tf.Tensor, timestamps_seen: set[int]):
+    # def doc_e_step(self, doc_idx: int, ɸ: tf.Tensor, Ξ: tf.Tensor):
+    def doc_e_step(self, doc_idx: int):
+        tf.experimental.numpy.experimental_enable_numpy_behavior()
+        ɸ = tf.zeros((self.T, self.K), dtype=tf.float64)
+        Ξ = tf.zeros((self.T, self.V, self.K), dtype=tf.float64)
         # extract word ids and frequencies from the document
         (doc_words, freqs) = self.corpus.get_words_and_counts(doc_idx)
-        # extract timestamp of the documents
-        t_doc = self.corpus.get_timestamp_index(doc_idx)
-        timestamps_seen.add(t_doc)
+        t_doc = self.corpus.get_timestamp_index(doc_idx)  # timestamp of the documents
         # do the actual inference (docφ:(単語, トピック))
         (docφ, λ, vi_ll) = self.document_inference(t_doc, doc_words, freqs)
         # collect sufficient statistics
@@ -219,9 +222,9 @@ class GDTM:
         converged = 1
         N_d = len(doc_words)  # get document data
         phi = tf.ones((N_d, self.K), dtype=tf.float64) / self.K  # Word-topic assignment probabilities
-        lambd = tf.ones(self.K, dtype=tf.float64) * self.alpha + N_d / self.K  # Dirichlet distribution parameters
-        dig_lambda = tf.math.digamma(lambd)
-        dig_lambda_sum = tf.math.digamma(tf.reduce_sum(lambd))
+        λ = tf.ones(self.K, dtype=tf.float64) * self.alpha + N_d / self.K  # Dirichlet distribution parameters
+        dig_lambda = tf.math.digamma(λ)
+        dig_lambda_sum = tf.math.digamma(tf.reduce_sum(λ))
         iter_count = 0
         means = tf.zeros((self.K, N_d), dtype=tf.float64)
         # Compute means for observed words in the document
@@ -257,10 +260,11 @@ class GDTM:
             iter_count += 1
         return phi, lambd, vi_ll
 
-    def inference_svi_gp(self, num_inducing: int, rand_inducing: bool = False, normalize_timestamps: bool = False):
+    def inference_svi_gp(
+        self, num_inducing: int, rand_inducing: bool = False, normalize_timestamps: bool = False, test_schedule=1
+    ):
         e_step_likelihoods = []
         m_step_likelihoods = []
-        test_schedule = 1
         cur_count = 0
         epochs = self.D // self.batch_size
         self.logger.info(f"doing {epochs} epochs with minibatch size {self.batch_size}")
@@ -294,11 +298,11 @@ class GDTM:
         self.Knm = self.krn.K(self.times, self.inducing_points)  # compute cross covariance and some intermediate result
         self.KnmKmmInv = tf.matmul(self.Knm, self.KmmInv)
         self.K_tilde = self.Knn - tf.matmul(self.KnmKmmInv, self.Knm, transpose_b=True)
-        self.K_tilde_diag = tf.linalg.diag_part(self.K_tilde)
         self.mu = []
         self.s = tf.Variable(tf.zeros((self.K, self.V, num_inducing, num_inducing), dtype=tf.float64))
         self.eta_1 = []
         self.eta_2 = tf.Variable(tf.zeros((self.K, self.V, num_inducing, num_inducing), dtype=tf.float64))
+        K_tilde_diag = tf.linalg.diag_part(self.K_tilde)
         L = tf.linalg.cholesky(self.Knn)  # (n, n)
         # muの初期化
         if self.use_seeding:
@@ -342,15 +346,13 @@ class GDTM:
         # parameters to steer the step size in stochastic gradient updates
         a = 0.1
         b: int = 10
-        gamma: float = 0.7
-        # helpers for performing inference loop
+        gamma: float = 0.7  # helpers for performing inference loop
         iter = 0
         svi_counter = 1
         perm = np.random.permutation(len(self.training_doc_ids))  # ランダムなインデックスの順列を取得
         mb_idx_rand = tf.gather(self.training_doc_ids, perm[: self.D])  # ランダムなnum_inducing個の要素を選択
         e_step_time_agg = 0.0
         m_step_time_agg = 0.0
-        online_bound = 0
         self.logger.info("done, starting inference")
 
         for e in range(epochs):
@@ -381,16 +383,16 @@ class GDTM:
             ## ======================================
             ##do local udpate step (termed "e-step")
             ## ======================================
-            e_step_ll, ɸ, Ξ, words_seen, t_seen, doc_topic_proportions = self.e_step(mb_idx)
-            e_step_ll *= mult  # multiply bound estimate by multiplier
-            e_step_likelihoods.append(e_step_ll)  # estimate of document specific bound for whole corpus
+            online_bound, ɸ, Ξ, words_seen, t_seen, doc_topic_proportions = self.e_step(mb_idx)
+            online_bound *= mult  # multiply bound estimate by multiplier
+            e_step_likelihoods.append(online_bound)  # estimate of document specific bound for whole corpus
             e_step_time = time.perf_counter() - start
             e_step_time_agg += e_step_time
             ## =====================================
             ##region (m-step, update global variables)
             ## =====================================
             start = time.perf_counter()
-            m_step_bound = self.m_step(mult, ɸ, Ξ, list(t_seen), lr, num_inducing)
+            m_step_bound = self.m_step(mult, ɸ, Ξ, list(t_seen), lr, num_inducing, K_tilde_diag)
             m_step_time = time.perf_counter() - start
             m_step_likelihoods.append(m_step_bound)
             online_bound += m_step_bound
@@ -399,7 +401,6 @@ class GDTM:
             # endregion
             self.likelihoods.append(online_bound)
             self.likelihood_counts.append(cur_count)
-
             # test on unseen data according to schedule
             if self.test_doc_ids.shape[0] > 0 and e % test_schedule == 0:
                 test_ppx = self.test()
@@ -413,7 +414,9 @@ class GDTM:
         )
         self.logger.info(f"e-step full: {e_step_time_agg}, m-step full: {m_step_time_agg}")
 
-    def m_step(self, mult, ɸ: tf.Tensor, Ξ: tf.Tensor, t_mb: list[int], lr: float, num_inducing: int) -> float:
+    def m_step(
+        self, mult, ɸ: tf.Tensor, Ξ: tf.Tensor, t_mb: list[int], lr: float, num_inducing: int, K_tilde_diag: tf.Tensor
+    ) -> float:
         m_step_bound = 0.0
         KnmKmmInvEff = tf.gather(self.KnmKmmInv, t_mb, axis=0)  # only look at words actually observed in the minibatch
         Λ_diags = tf.zeros((self.T, self.V), dtype=tf.float64)
@@ -427,11 +430,11 @@ class GDTM:
             )
             Λ_diags = tf.tensor_scatter_nd_update(Λ_diags, [[t] for t in t_mb], update)
             means = tf.tensor_scatter_nd_update(means, [[t] for t in t_mb], tf.matmul(KnmKmmInvEff, self.mu[k]))
-            temp = means + 0.5 * (self.K_tilde_diag[:, tf.newaxis] + Λ_diags) - self.zeta[k, :, tf.newaxis]
+            temp = means + 0.5 * (K_tilde_diag[:, tf.newaxis] + Λ_diags) - self.zeta[k, :, tf.newaxis]
             B_tilde_k = ɸ_k[:, tf.newaxis] * tf.exp(tf.gather(temp, t_mb))
             # euclidean gradient for mean
             dL_dm = tf.matmul(KnmKmmInvEff, (Ξ_k + B_tilde_k * tf.gather(means, t_mb) - 1), transpose_a=True)  # (12)
-            self.eta_1[k] = (1 - lr) * self.eta_1[k] + lr * dL_dm
+            self.eta_1[k] = (1 - lr) * self.eta_1[k] + lr * dL_dm  # natural gradient update
             for w in range(self.V):
                 # euclidean gradient for variance
                 dL_dS = -0.5 * (
@@ -508,11 +511,13 @@ class GDTM:
             phi = (dig_λ - dig_λ_sum)[:, tf.newaxis] + means - self.zeta[:, t_doc, tf.newaxis]
             log_phi_sum = tf.math.reduce_logsumexp(phi, axis=0)
             phi = tf.exp(phi - log_phi_sum) + 1e-100  # normalize and exp phi
-            doc_ll = self.compute_document_likelihood(t_doc, w_2, tf_2, phi, theta, means)
+            doc_ll = self.compute_document_likelihood(t_doc, w_2, tf_2, phi.T, theta, means)
             test_ll += doc_ll
             total_token_count += w_2.shape[0]
         return -tf.exp(test_ll / total_token_count)
 
     def svi_update_zeta(self, k: int, means, Λ_diags):
         for t in range(self.T):
-            self.zeta[k, t].assign(tf.math.reduce_logsumexp(means[t, :] + 0.5 * (Λ_diags[t, :] + self.K_tilde[t, t])))
+            self.zeta[k, t].assign(
+                tf.math.reduce_logsumexp(means[t, :] + 0.5 * (Λ_diags[t, :] + self.K_tilde[t, t]))
+            )  # A.1

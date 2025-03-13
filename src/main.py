@@ -5,11 +5,12 @@ import hydra
 import omegaconf
 import tensorflow as tf
 import wandb
-from configs import Config
 from gpflow.kernels.stationaries import Exponential
-from models import GDTM, Corpus, preprocess_nips
 from tf_keras.mixed_precision import set_global_policy
 from utilpy import log_init
+
+from configs import Config
+from models import GDTM, Corpus, preprocess_nips
 
 tf.experimental.numpy.experimental_enable_numpy_behavior()
 
@@ -29,7 +30,7 @@ def main(cfg: Config):
         corpus = Corpus(df, vocabulary, year)
         kernel = Exponential()
         model = GDTM(kernel, 0.1, corpus, 3, 100, 0.1, 0.1, 0.1, True)
-        model.inference_svi_gp(20, normalize_timestamps=True)
+        model.inference_svi_gp(20, normalize_timestamps=True, test_schedule=10)
         # wandb.log({"loss": loss})
         # wandb.finish()
     except Exception as ex:
