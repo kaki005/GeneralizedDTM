@@ -127,7 +127,6 @@ class GDTM:
         self.likelihoods = []
         self.test_perplexities = []
         self.learning_rates = []
-
         self.timestamps = self.corpus.get_unique_timestamps()
         self.init_times()
         self.T = len(self.times)
@@ -140,14 +139,14 @@ class GDTM:
         )
         self.times -= tf.reduce_min(self.times) - 1
 
-    def compute_document_likelihood(self, t_doc, doc_words, freqs, phi, lambd, means):
-        dig_lambda = tf.math.digamma(lambd)
-        dig_lambda_sum = tf.math.digamma(tf.reduce_sum(lambd))
-        a = (dig_lambda - dig_lambda_sum)[:, tf.newaxis] + means - self.zeta[:, t_doc, tf.newaxis] - tf.math.log(phi).T
+    def compute_document_likelihood(self, t_doc, doc_words, freqs, phi, λ, means):
+        dig_λ = tf.math.digamma(λ)
+        dig_λ_sum = tf.math.digamma(tf.reduce_sum(λ))
+        a = (dig_λ - dig_λ_sum)[:, tf.newaxis] + means - self.zeta[:, t_doc, tf.newaxis] - tf.math.log(phi).T
         b = tf.matmul(phi, a)
         likelihood = tf.reduce_sum(tf.linalg.matvec(b, freqs, transpose_a=True))
-        likelihood += tf.reduce_sum(tf.math.lgamma(lambd)) - tf.math.lgamma(tf.reduce_sum(lambd))
-        likelihood += tf.reduce_sum((self.alpha - lambd) * (dig_lambda - dig_lambda_sum))
+        likelihood += tf.reduce_sum(tf.math.lgamma(λ)) - tf.math.lgamma(tf.reduce_sum(λ))
+        likelihood += tf.reduce_sum((self.alpha - λ) * (dig_λ - dig_λ_sum))
         return likelihood
 
     """
@@ -171,16 +170,11 @@ class GDTM:
         returns = joblib.Parallel(n_jobs=-1)(
             joblib.delayed(self.doc_e_step)(doc_idx.numpy().item()) for doc_idx in data_idxes
         )
-        for ret in returns:
-            (vi_ll, λ, ɸt, Ξt) = ret
+        for vi_ll, λ, ɸt, Ξt in returns:
             e_step_ll += vi_ll
             doc_topic_proportions.append(λ)
             ɸ += ɸt
             Ξ += Ξt
-        # for i, doc_idx in enumerate(data_idxes):  # 文書ごとに
-        #     (vi_ll, λ, ɸ, Ξ) = self.doc_e_step(doc_idx.numpy().item(), ɸ, Ξ, t_seen)  # eステップ
-        #     e_step_ll += vi_ll
-        #     doc_topic_proportions.append(λ)  # 文書ごとのトピック比率
         return e_step_ll, ɸ, Ξ, words_seen, t_seen, doc_topic_proportions
 
     """
@@ -211,9 +205,6 @@ class GDTM:
         # adds = tf.linalg.matvec(docφ, freqs, transpose_a=True)
         indices = tf.constant([[t_doc, w] for w in doc_words])
         Ξ = tf.tensor_scatter_nd_add(Ξ, indices, tf.transpose(tf.transpose(docφ) * freqs))
-        # for i, w in enumerate(doc_words):
-        #     add = tf.gather(docφ, tf.constant([i]), axis=0) * freqs[i]
-        #     Ξ = tf.tensor_scatter_nd_add(Ξ, tf.constant([[t_doc, w]]), add)
         return vi_ll, λ, ɸ, Ξ
 
     def document_inference(self, t_doc: int, doc_words: list[int], freqs: tf.Tensor):
@@ -223,50 +214,53 @@ class GDTM:
         N_d = len(doc_words)  # get document data
         phi = tf.ones((N_d, self.K), dtype=tf.float64) / self.K  # Word-topic assignment probabilities
         λ = tf.ones(self.K, dtype=tf.float64) * self.alpha + N_d / self.K  # Dirichlet distribution parameters
-        dig_lambda = tf.math.digamma(λ)
-        dig_lambda_sum = tf.math.digamma(tf.reduce_sum(λ))
+        # λ = self.alpha + tf.linalg.matvec(phi, freqs, transpose_a=True)
+        dig_λ = tf.math.digamma(λ)
+        dig_λ_sum = tf.math.digamma(tf.reduce_sum(λ))
         iter_count = 0
         means = tf.zeros((self.K, N_d), dtype=tf.float64)
         # Compute means for observed words in the document
         for k in range(self.K):
             a = tf.gather(self.KnmKmmInv, t_doc, axis=0)
             b = tf.gather(self.mu[k], doc_words, axis=1)
-            update = tf.expand_dims(tf.linalg.matvec(b, a, transpose_a=True), axis=0)
-            means = tf.tensor_scatter_nd_update(means, tf.constant([[k]]), update)
+            update = tf.linalg.matvec(b, a, transpose_a=True)
+            means = tf.tensor_scatter_nd_update(means, tf.constant([[k]]), [update])
         # Variational inference loop
         while converged > 1e-3:
-            vi_ll = 0
-            for i in range(N_d):
-                updates = (
-                    dig_lambda
-                    - dig_lambda_sum
-                    + tf.squeeze(tf.gather(means, tf.constant([i]), axis=1))
-                    - tf.squeeze(tf.gather(self.zeta, tf.constant([t_doc]), axis=1))
-                )
+            # for i in range(N_d):
+            #     updates = dig_λ - dig_λ_sum[tf.newaxis] + means[:, i] - self.zeta[:, t_doc]
+            #     phi = tf.tensor_scatter_nd_update(phi, tf.constant([[i]]), [updates])
+            #     # Normalize and exponentiate phi
+            #     log_phi_sum = tf.math.reduce_logsumexp(phi, axis=0)
+            #     phi = tf.tensor_scatter_nd_update(phi, [[i]], [tf.exp(phi[i] - log_phi_sum) + 1e-100])
 
-                phi = tf.tensor_scatter_nd_update(phi, tf.constant([[i]]), [updates])
-                log_phi_sum = tf.math.reduce_logsumexp(phi)
-                # Normalize and exponentiate phi
-                phi = tf.tensor_scatter_nd_update(phi, [[i]], [tf.exp(phi[i] - log_phi_sum) + 1e-100])
-                # Update lambda
-                lambd = self.alpha + tf.linalg.matvec(phi, freqs, transpose_a=True)
-                dig_lambda = tf.math.digamma(lambd)
-                dig_lambda_sum = tf.math.digamma(tf.reduce_sum(lambd))
+            phi = (dig_λ - dig_λ_sum[tf.newaxis])[tf.newaxis, :] + means.T - self.zeta[tf.newaxis, :, t_doc]
+            # Normalize and exponentiate phi
+            log_phi_sum = tf.math.reduce_logsumexp(phi, axis=1)
+            phi = tf.exp(phi - log_phi_sum[:, tf.newaxis]) + 1e-100
+            # # Update λ
+            λ = self.alpha + tf.linalg.matvec(phi, freqs, transpose_a=True)
+            dig_λ = tf.math.digamma(λ)
+            dig_λ_sum = tf.math.digamma(tf.reduce_sum(λ))
             # Compute document likelihood
-            vi_ll = self.compute_document_likelihood(t_doc, doc_words, freqs, phi, lambd, means)
+            vi_ll = self.compute_document_likelihood(t_doc, doc_words, freqs, phi, λ, means)
             # Check convergence
             converged = (last_vi_ll - vi_ll) / last_vi_ll
             last_vi_ll = vi_ll
             iter_count += 1
-        return phi, lambd, vi_ll
+        return phi, λ, vi_ll
 
     def inference_svi_gp(
-        self, num_inducing: int, rand_inducing: bool = False, normalize_timestamps: bool = False, test_schedule=1
+        self,
+        num_inducing: int,
+        rand_inducing: bool = False,
+        normalize_timestamps: bool = False,
+        epochs: int = 10,
+        test_schedule=1,
     ):
         e_step_likelihoods = []
         m_step_likelihoods = []
         cur_count = 0
-        epochs = self.D // self.batch_size
         self.logger.info(f"doing {epochs} epochs with minibatch size {self.batch_size}")
         self.logger.info(f"parameter: Kernel: {self.krn} alpha: {self.alpha} K: {self.K}")
         # timestamp normalization is disabled by default

@@ -30,7 +30,7 @@ def main(cfg: Config):
         corpus = Corpus(df, vocabulary, year)
         kernel = Exponential()
         model = GDTM(kernel, 0.1, corpus, 3, 100, 0.1, 0.1, 0.1, True)
-        model.inference_svi_gp(20, normalize_timestamps=True, test_schedule=10)
+        model.inference_svi_gp(20, normalize_timestamps=True, test_schedule=10, epochs=100)
         # wandb.log({"loss": loss})
         # wandb.finish()
     except Exception as ex:
